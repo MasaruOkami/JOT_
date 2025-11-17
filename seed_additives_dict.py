@@ -38,6 +38,24 @@ def normalize_text(s: str | None) -> str | None:
     s = re.sub(r"\s+", "", s)
     return s.lower()
 
+def find_additive_by_label(label: str) -> dict | None:
+    """原材料表示のラベル文字列から additives_dict 1件を取得する"""
+    norm = normalize_text(label)
+    if not norm:
+        return None
+
+    res = (
+        supabase.table("additives_dict")
+        .select("*")
+        .or_(
+            f"name_ja_normalized.eq.{norm},"
+            f'alias_normalized.cs.{{"{norm}"}}'
+        )
+        .limit(1)
+        .execute()
+    )
+
+    return res.data[0] if res.data else None
 
 def build_alias_normalized(
     aliases: List[str] | None,
