@@ -1186,8 +1186,11 @@ COLORING_ADDITIVES: List[Dict[str, Any]] = [
 # メイン処理
 # ==========
 
+# ALL_ADDITIVES と COLORING_ADDITIVES を結合してから upsert する
 def main() -> None:
-    rows = [prepare_additive_row(a) for a in ALL_ADDITIVES]
+    all_rows = ALL_ADDITIVES + COLORING_ADDITIVES
+
+    rows = [prepare_additive_row(a) for a in all_rows]
 
     chunk_size = 50
     for i in range(0, len(rows), chunk_size):
