@@ -29,7 +29,7 @@ jobs:
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
           else
-            pip install supabase-py python-dotenv
+            pip install supabase python-dotenv
           fi
 
       - name: Run monthly report script
