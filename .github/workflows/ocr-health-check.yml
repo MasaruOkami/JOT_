@@ -1,0 +1,23 @@
+name: Daily OCR Health Check
+
+on:
+  schedule:
+    # UTC 15:00 = 日本時間 24:00（0時）
+    # 好きな時間に変えてOK
+    - cron: "0 15 * * *"
+  # 手動実行もできるようにしておく
+  workflow_dispatch:
+
+jobs:
+  call-ocr-health-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Call ocr-health-check Edge Function
+        run: |
+          curl -X POST \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Content-Type: application/json" \
+            https://isslaklpblhqagwtrgfi.functions.supabase.co/ocr-health-check
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
