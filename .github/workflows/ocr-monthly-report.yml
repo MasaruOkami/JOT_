@@ -1,0 +1,47 @@
+name: Monthly OCR Report
+
+on:
+  schedule:
+    # 毎月1日 01:00 (JST) に実行したい場合
+    # JST 01:00 = UTC 16:00
+    - cron: "0 16 1 * *"
+  # 手動実行もできるように
+  workflow_dispatch:
+
+jobs:
+  send-ocr-monthly-report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # requirements.txt があればそれを優先
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            pip install supabase-py python-dotenv
+          fi
+
+      - name: Run monthly report script
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}        # 例: smtp.gmail.com
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}        # 例: 587
+          SMTP_USER: ${{ secrets.SMTP_USER }}        # 送信元 Gmail
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}        # Gmail のアプリパス
+          REPORT_FROM: ${{ secrets.REPORT_FROM }}    # 省略時は SMTP_USER
+          REPORT_TO: ${{ secrets.REPORT_TO }}        # 管理者のメール
+        run: |
+          python send_ocr_monthly_report.py
