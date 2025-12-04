@@ -1,7 +1,7 @@
 # send_ocr_monthly_report.py
 
 import os
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import smtplib
@@ -35,10 +35,10 @@ def get_last_month_range() -> tuple[date, date]:
     """先月の月初・月末を返す"""
     today = date.today()
     first_this_month = today.replace(day=1)
-    last_month_end = first_this_month - datetime.resolution  # 前日
+    # 前月末 = 今月1日の前日
+    last_month_end = first_this_month - timedelta(days=1)
     last_month_start = last_month_end.replace(day=1)
     return last_month_start, last_month_end
-
 
 def fetch_monthly_summary(start: date, end: date):
     """v_ocr_scan_monthly_summary から先月分を取得"""
