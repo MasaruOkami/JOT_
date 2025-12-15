@@ -1,9 +1,18 @@
-name: OCR Health Check (Alert Mail)
+name: OCR Health Check (Alert + Daily)
 
 on:
   schedule:
-    - cron: "*/30 * * * *"  # 30分おき
+    # 30分おき（異常時のみ通知）
+    - cron: "*/30 * * * *"
+    # 毎日1回（生存確認メール）※ 0:00 は */30 と被るので 0:05 にずらす
+    # JST 09:05 = UTC 00:05
+    - cron: "5 0 * * *"
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "alert: 異常時のみ / daily: 毎日送信"
+        required: false
+        default: "alert"
 
 jobs:
   ocr-health-check:
@@ -26,6 +35,25 @@ jobs:
           pip install requests
           sudo apt-get update
           sudo apt-get install -y msmtp ca-certificates gettext-base
+
+      - name: Decide MODE
+        id: mode
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            MODE="${{ inputs.mode }}"
+          else
+            # どの cron で起動したかで判定
+            if [ "${{ github.event.schedule }}" = "5 0 * * *" ]; then
+              MODE="daily"
+            else
+              MODE="alert"
+            fi
+          fi
+
+          echo "MODE=${MODE}" | tee -a "$GITHUB_OUTPUT"
 
       - name: Write msmtp config
         env:
@@ -61,11 +89,10 @@ jobs:
           echo "msmtp version:"
           msmtp --version
 
-      - name: Locate script (debug)
+      - name: Locate script
         run: |
           set -euo pipefail
           echo "pwd=$(pwd)"
-          ls -la
           echo "--- find ocr_alert_check.py ---"
           find . -maxdepth 6 -type f -name "ocr_alert_check.py" -print
 
@@ -74,23 +101,23 @@ jobs:
             echo "ocr_alert_check.py not found"
             exit 2
           fi
-          echo "SCRIPT_PATH=${SCRIPT_PATH}" >> $GITHUB_ENV
+          echo "SCRIPT_PATH=${SCRIPT_PATH}" >> "$GITHUB_ENV"
 
-      - name: Run alert check (ALERT only)
+      - name: Run alert check
         env:
+          MODE: ${{ steps.mode.outputs.MODE }}
+
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
           REPORT_TO: ${{ secrets.REPORT_TO }}
           REPORT_FROM: ${{ secrets.REPORT_FROM }}
-
-          # テスト送信したい場合だけ true にする（普段は消す or false）
-          FORCE_SEND_OK: ${{ secrets.FORCE_SEND_OK }}
 
           # ログ出したい時だけ true
           DEBUG_MSMTP_LOG: ${{ secrets.DEBUG_MSMTP_LOG }}
         run: |
           set -euo pipefail
-
+          echo "MODE=${MODE}"
           echo "Running: python ${SCRIPT_PATH}"
           python "${SCRIPT_PATH}"
 
