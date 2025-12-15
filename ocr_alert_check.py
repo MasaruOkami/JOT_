@@ -1,156 +1,196 @@
 import os
 import sys
-import json
 import subprocess
 from datetime import datetime, timezone
 import requests
+import smtplib
+from email.message import EmailMessage
+from typing import Any
 
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
 
-# Gmail(msmtp) 送信
-ALERT_TO = os.environ.get("ALERT_TO", "")  # 例: you@example.com
-ALERT_FROM = os.environ.get("ALERT_FROM", "")  # 例: you@example.com
+# Gmail SMTP（GitHub Secrets: SMTP_HOST/PORT/USER/PASS）
+SMTP_HOST = os.environ.get("SMTP_HOST", "")
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "0") or 0)
+SMTP_USER = os.environ.get("SMTP_USER", "")
+SMTP_PASS = os.environ.get("SMTP_PASS", "")
 
-# 追加でSlack等は不要なので無し
+# GitHub Secrets（添付の名前に合わせる）
+REPORT_TO = os.environ.get("REPORT_TO", "")     # 例: a@x.com,b@y.com
+REPORT_FROM = os.environ.get("REPORT_FROM", "") # 例: you@gmail.com
+
 
 def die(msg: str, code: int = 1):
-  print(msg)
-  sys.exit(code)
+    print(msg)
+    sys.exit(code)
+
 
 def supabase_get(path: str):
-  url = f"{SUPABASE_URL}/rest/v1/{path}"
-  headers = {
-    "apikey": SUPABASE_SERVICE_ROLE_KEY,
-    "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
-    "Content-Type": "application/json",
-  }
-  r = requests.get(url, headers=headers, timeout=30)
-  if not r.ok:
-    raise RuntimeError(f"Supabase GET failed: {r.status_code} {r.text}")
-  return r.json()
-
-def fetch_thresholds():
-  rows = supabase_get("ocr_alert_thresholds?select=*&id=eq.1")
-  if not rows:
-    # デフォルト（DBに無い場合の保険）
-    return {
-      "window_minutes": 60,
-      "max_fail_count": 5,
-      "max_fail_rate": 0.20,
-      "quality_score_threshold": 40,
-      "max_low_quality_rate": 0.30,
-      "unknown_ratio_threshold": 0.50,
-      "max_high_unknown_rate": 0.30,
+    if not SUPABASE_URL:
+        raise RuntimeError("SUPABASE_URL is empty")
+    url = f"{SUPABASE_URL}/rest/v1/{path}"
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+        "Content-Type": "application/json",
     }
-  return rows[0]
+    r = requests.get(url, headers=headers, timeout=30)
+    if not r.ok:
+        raise RuntimeError(f"Supabase GET failed: {r.status_code} {r.text}")
+    return r.json()
 
-def fetch_window_summary():
-  rows = supabase_get("v_ocr_alert_window?select=*")
-  if not rows:
-    raise RuntimeError("v_ocr_alert_window returned empty")
-  return rows[0]
 
-def fetch_error_stage_rank(limit: int = 8):
-  rows = supabase_get(f"v_ocr_alert_error_stage_rank?select=*&order=cnt.desc&limit={limit}")
-  return rows
+def fetch_thresholds() -> dict[str, Any]:
+    # 既存の設計のままでOK（id=1 を読む）
+    rows = supabase_get("ocr_alert_thresholds?select=*&id=eq.1")
+    if not rows:
+        # デフォルト（DBに無い場合の保険）
+        return {
+            "window_minutes": 60,
+            "max_fail_count": 5,
+            "max_fail_rate": 0.20,
+            "quality_score_threshold": 40,
+            "max_low_quality_rate": 0.30,
+            "unknown_ratio_threshold": 0.50,
+            "max_high_unknown_rate": 0.30,
+        }
+    return rows[0]
 
-def build_subject(is_alert: bool):
-  return ("[ALERT] OCR監視 異常検知" if is_alert else "[OK] OCR監視 正常") + " - " + datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
-def build_body(th, w, rank, is_alert: bool, reasons: list[str]):
-  lines = []
-  lines.append(f"判定: {'ALERT' if is_alert else 'OK'}")
-  lines.append(f"集計ウィンドウ: {w.get('window_minutes')} 分")
-  lines.append("")
-  lines.append("■ サマリ")
-  lines.append(f"- total_count: {w.get('total_count')}")
-  lines.append(f"- fail_count: {w.get('fail_count')} / fail_rate: {w.get('fail_rate')}")
-  lines.append(f"- avg_quality_score: {w.get('avg_quality_score')}")
-  lines.append(f"- low_quality_count: {w.get('low_quality_count')} / low_quality_rate: {w.get('low_quality_rate')}")
-  lines.append(f"- high_unknown_count: {w.get('high_unknown_count')} / high_unknown_rate: {w.get('high_unknown_rate')}")
-  lines.append("")
-  lines.append("■ 閾値")
-  lines.append(f"- max_fail_count: {th.get('max_fail_count')}")
-  lines.append(f"- max_fail_rate: {th.get('max_fail_rate')}")
-  lines.append(f"- quality_score_threshold: {th.get('quality_score_threshold')}")
-  lines.append(f"- max_low_quality_rate: {th.get('max_low_quality_rate')}")
-  lines.append(f"- unknown_ratio_threshold: {th.get('unknown_ratio_threshold')}")
-  lines.append(f"- max_high_unknown_rate: {th.get('max_high_unknown_rate')}")
-  lines.append("")
+def fetch_window_summary() -> dict[str, Any]:
+    rows = supabase_get("v_ocr_alert_window?select=*")
+    if not rows:
+        raise RuntimeError("v_ocr_alert_window returned empty")
+    return rows[0]
 
-  if reasons:
-    lines.append("■ 超過した条件")
-    for r in reasons:
-      lines.append(f"- {r}")
+
+def fetch_error_stage_rank(limit: int = 8) -> list[dict[str, Any]]:
+    rows = supabase_get(
+        f"v_ocr_alert_error_stage_rank?select=*&order=cnt.desc&limit={limit}"
+    )
+    return rows or []
+
+
+def build_subject(is_alert: bool) -> str:
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    return ("[ALERT] OCR監視 異常検知" if is_alert else "[OK] OCR監視 正常") + f" - {ts}"
+
+
+def build_body(th: dict[str, Any], w: dict[str, Any], rank: list[dict[str, Any]], is_alert: bool, reasons: list[str]) -> str:
+    lines: list[str] = []
+    lines.append(f"判定: {'ALERT' if is_alert else 'OK'}")
+    lines.append(f"集計ウィンドウ: {w.get('window_minutes')} 分")
     lines.append("")
 
-  lines.append("■ error_stage（失敗のみ上位）")
-  if rank:
-    for row in rank:
-      lines.append(f"- {row.get('error_stage')}: {row.get('cnt')}")
-  else:
-    lines.append("- (なし)")
-  lines.append("")
+    lines.append("■ サマリ")
+    lines.append(f"- total_count: {w.get('total_count')}")
+    lines.append(f"- fail_count: {w.get('fail_count')} / fail_rate: {w.get('fail_rate')}")
+    lines.append(f"- avg_quality_score: {w.get('avg_quality_score')}")
+    lines.append(f"- low_quality_count: {w.get('low_quality_count')} / low_quality_rate: {w.get('low_quality_rate')}")
+    lines.append(f"- high_unknown_count: {w.get('high_unknown_count')} / high_unknown_rate: {w.get('high_unknown_rate')}")
+    lines.append("")
 
-  lines.append("■ 次のアクション（運用）")
-  lines.append("- fail が多い: error_stage の上位から原因追跡（signedUrl / fetch_image / ocr / ingredients / reply-line）")
-  lines.append("- low_quality が多い: quality_score の分布と avg_confidence/raw_ocr_text_length を見る（撮影案内改善）")
-  lines.append("- high_unknown が多い: additive_unknown_labels の pending 上位を辞書追加")
-  lines.append("")
-  return "\n".join(lines)
+    lines.append("■ 閾値")
+    lines.append(f"- max_fail_count: {th.get('max_fail_count')}")
+    lines.append(f"- max_fail_rate: {th.get('max_fail_rate')}")
+    lines.append(f"- quality_score_threshold: {th.get('quality_score_threshold')}")
+    lines.append(f"- max_low_quality_rate: {th.get('max_low_quality_rate')}")
+    lines.append(f"- unknown_ratio_threshold: {th.get('unknown_ratio_threshold')}")
+    lines.append(f"- max_high_unknown_rate: {th.get('max_high_unknown_rate')}")
+    lines.append("")
 
-def send_mail_msmtp(subject: str, body: str):
-  if not ALERT_TO or not ALERT_FROM:
-    die("ALERT_TO / ALERT_FROM が未設定です")
+    if reasons:
+        lines.append("■ 超過した条件")
+        for r in reasons:
+            lines.append(f"- {r}")
+        lines.append("")
 
-  msg = f"""From: {ALERT_FROM}
-To: {ALERT_TO}
-Subject: {subject}
-Content-Type: text/plain; charset=UTF-8
+    lines.append("■ error_stage（失敗のみ上位）")
+    if rank:
+        for row in rank:
+            lines.append(f"- {row.get('error_stage')}: {row.get('cnt')}")
+    else:
+        lines.append("- (なし)")
+    lines.append("")
 
-{body}
-"""
-  # msmtp は stdin をそのまま送れる
-  p = subprocess.run(["msmtp", "-t"], input=msg.encode("utf-8"), check=False)
-  if p.returncode != 0:
-    raise RuntimeError(f"msmtp failed with code={p.returncode}")
+    lines.append("■ 次のアクション（運用）")
+    lines.append("- fail が多い: error_stage 上位から原因追跡（signedUrl / fetch_image / ocr / ingredients / reply-line）")
+    lines.append("- low_quality が多い: quality_score と avg_confidence/raw_ocr_text_length を見る（撮影案内改善）")
+    lines.append("- high_unknown が多い: additive_unknown_labels の pending 上位を辞書追加")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _parse_recipients(to_raw: str) -> list[str]:
+    # "a@x.com,b@y.com" / "a@x.com; b@y.com" どちらもOK
+    parts = [p.strip() for p in to_raw.replace(";", ",").split(",")]
+    return [p for p in parts if p]
+
+
+def send_mail_smtp(subject: str, body: str):
+    if not REPORT_TO or not REPORT_FROM:
+        die("REPORT_TO / REPORT_FROM が未設定です（GitHub Secrets を確認）")
+
+    if not (SMTP_HOST and SMTP_PORT and SMTP_USER and SMTP_PASS):
+        die("SMTP_HOST/SMTP_PORT/SMTP_USER/SMTP_PASS が未設定です（GitHub Secrets を確認）")
+
+    tos = _parse_recipients(REPORT_TO)
+    if not tos:
+        die("REPORT_TO の形式が不正です（宛先が空）")
+
+    msg = EmailMessage()
+    msg["From"] = REPORT_FROM
+    msg["To"] = ", ".join(tos)
+    msg["Subject"] = subject
+    msg.set_content(body)
+
+    # Gmail: STARTTLS(587) 想定
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as s:
+        s.ehlo()
+        s.starttls()
+        s.ehlo()
+        s.login(SMTP_USER, SMTP_PASS)
+        s.send_message(msg)
+
 
 def main():
-  if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
-    die("SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY が未設定です")
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        die("SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY が未設定です")
 
-  th = fetch_thresholds()
-  w = fetch_window_summary()
-  rank = fetch_error_stage_rank()
+    th = fetch_thresholds()
+    w = fetch_window_summary()
+    rank = fetch_error_stage_rank()
 
-  reasons = []
-  fail_count = int(w.get("fail_count") or 0)
-  total_count = int(w.get("total_count") or 0)
-  fail_rate = float(w.get("fail_rate") or 0)
-  low_quality_rate = float(w.get("low_quality_rate") or 0)
-  high_unknown_rate = float(w.get("high_unknown_rate") or 0)
+    reasons: list[str] = []
+    fail_count = int(w.get("fail_count") or 0)
+    total_count = int(w.get("total_count") or 0)
+    fail_rate = float(w.get("fail_rate") or 0)
+    low_quality_rate = float(w.get("low_quality_rate") or 0)
+    high_unknown_rate = float(w.get("high_unknown_rate") or 0)
 
-  if fail_count >= int(th["max_fail_count"]):
-    reasons.append(f"fail_count {fail_count} >= {th['max_fail_count']}")
-  if total_count >= 10 and fail_rate >= float(th["max_fail_rate"]):
-    reasons.append(f"fail_rate {fail_rate} >= {th['max_fail_rate']} (total_count>=10)")
-  if total_count >= 10 and low_quality_rate >= float(th["max_low_quality_rate"]):
-    reasons.append(f"low_quality_rate {low_quality_rate} >= {th['max_low_quality_rate']} (total_count>=10)")
-  if total_count >= 10 and high_unknown_rate >= float(th["max_high_unknown_rate"]):
-    reasons.append(f"high_unknown_rate {high_unknown_rate} >= {th['max_high_unknown_rate']} (total_count>=10)")
+    # ※ total_count が小さい時はノイズが出やすいので >=10 条件は維持
+    if fail_count >= int(th["max_fail_count"]):
+        reasons.append(f"fail_count {fail_count} >= {th['max_fail_count']}")
+    if total_count >= 10 and fail_rate >= float(th["max_fail_rate"]):
+        reasons.append(f"fail_rate {fail_rate} >= {th['max_fail_rate']} (total_count>=10)")
+    if total_count >= 10 and low_quality_rate >= float(th["max_low_quality_rate"]):
+        reasons.append(f"low_quality_rate {low_quality_rate} >= {th['max_low_quality_rate']} (total_count>=10)")
+    if total_count >= 10 and high_unknown_rate >= float(th["max_high_unknown_rate"]):
+        reasons.append(f"high_unknown_rate {high_unknown_rate} >= {th['max_high_unknown_rate']} (total_count>=10)")
 
-  is_alert = len(reasons) > 0
-  subject = build_subject(is_alert)
-  body = build_body(th, w, rank, is_alert, reasons)
+    is_alert = len(reasons) > 0
+    subject = build_subject(is_alert)
+    body = build_body(th, w, rank, is_alert, reasons)
 
-  # 方針：ALERT時のみ送信（ノイズ削減）
-  if is_alert:
-    send_mail_msmtp(subject, body)
-    print("ALERT sent")
-  else:
-    print("OK (no alert)")
+    # 方針：ALERT時のみ送信
+    if is_alert:
+        send_mail_smtp(subject, body)
+        print("ALERT sent")
+    else:
+        print("OK (no alert)")
+
 
 if __name__ == "__main__":
-  main()
+    main()
