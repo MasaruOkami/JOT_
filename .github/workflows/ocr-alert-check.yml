@@ -60,6 +60,12 @@ jobs:
           echo "msmtp version:"
           msmtp --version
 
+     - name: List files (debug)
+        run: |
+          pwd
+          ls -la
+          find . -maxdepth 3 -type f -name "ocr_health_check.py" -print
+
       - name: Run health check (ALERT only)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
