@@ -155,7 +155,7 @@ def main():
     w = fetch_window_summary()
     rank = fetch_error_stage_rank()
 
-    reasons: list[str] = []
+    reasons = []
     fail_count = int(w.get("fail_count") or 0)
     total_count = int(w.get("total_count") or 0)
     fail_rate = float(w.get("fail_rate") or 0)
@@ -165,27 +165,27 @@ def main():
     if fail_count >= int(th["max_fail_count"]):
         reasons.append(f"fail_count {fail_count} >= {th['max_fail_count']}")
     if total_count >= 10 and fail_rate >= float(th["max_fail_rate"]):
-        reasons.append(f"fail_rate {fail_rate} >= {th['max_fail_rate']} (total_count>=10)")
+        reasons.append(f"fail_rate {fail_rate} >= {th['max_fail_rate']}")
     if total_count >= 10 and low_quality_rate >= float(th["max_low_quality_rate"]):
-        reasons.append(f"low_quality_rate {low_quality_rate} >= {th['max_low_quality_rate']} (total_count>=10)")
+        reasons.append(f"low_quality_rate {low_quality_rate} >= {th['max_low_quality_rate']}")
     if total_count >= 10 and high_unknown_rate >= float(th["max_high_unknown_rate"]):
-        reasons.append(f"high_unknown_rate {high_unknown_rate} >= {th['max_high_unknown_rate']} (total_count>=10)")
+        reasons.append(f"high_unknown_rate {high_unknown_rate} >= {th['max_high_unknown_rate']}")
 
     is_alert = len(reasons) > 0
+
     subject = build_subject(is_alert)
     body = build_body(th, w, rank, is_alert, reasons)
 
-    if is_alert:
-        try:
-            send_mail_smtp(subject, body)
-            print("ALERT sent")
-        except Exception as e:
-            # ✅ ここが出れば「届かない」の原因がログに出ます
-            print(f"[MAIL ERROR] {type(e).__name__}: {e}")
-            raise
+    # 🔽 ここが追加ポイント
+    force_send = os.environ.get("FORCE_SEND_OK", "").lower() == "true"
+
+    if is_alert or force_send:
+        send_mail_msmtp(subject, body)
+        print("MAIL sent")
     else:
         print("OK (no alert)")
 
 
 if __name__ == "__main__":
     main()
+    
