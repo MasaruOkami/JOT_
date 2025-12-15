@@ -2,7 +2,7 @@ name: OCR Health Check (Alert Mail)
 
 on:
   schedule:
-    - cron: "*/30 * * * *"   # 30分おき（必要に応じて変更）
+    - cron: "*/30 * * * *"
   workflow_dispatch:
 
 jobs:
@@ -24,7 +24,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests
           sudo apt-get update
-          sudo apt-get install -y msmtp ca-certificates
+          sudo apt-get install -y msmtp ca-certificates gettext-base
 
       - name: Write msmtp config
         env:
@@ -34,7 +34,8 @@ jobs:
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           REPORT_FROM: ${{ secrets.REPORT_FROM }}
         run: |
-          set -eu
+          set -euo pipefail
+
           cat > ~/.msmtprc << 'EOF'
           defaults
           auth           on
@@ -52,7 +53,6 @@ jobs:
           account default : gmail
           EOF
 
-          # 変数展開
           envsubst < ~/.msmtprc > ~/.msmtprc.tmp
           mv ~/.msmtprc.tmp ~/.msmtprc
           chmod 600 ~/.msmtprc
@@ -67,10 +67,12 @@ jobs:
           REPORT_TO: ${{ secrets.REPORT_TO }}
           REPORT_FROM: ${{ secrets.REPORT_FROM }}
         run: |
+          set -euo pipefail
           python ocr_health_check.py
 
-      - name: Dump msmtp log (only if failed)
-        if: failure()
+      # ★デバッグしたい時だけ true にする
+      - name: Dump msmtp log (debug)
+        if: ${{ always() && secrets.DEBUG_MSMTP_LOG == 'true' }}
         run: |
           echo "----- ~/.msmtp.log -----"
           cat ~/.msmtp.log || true
