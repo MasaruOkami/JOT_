@@ -1,25 +1,19 @@
 import os
 import sys
+import subprocess
 from datetime import datetime, timezone
 from typing import Any
-
 import requests
-import smtplib
-from email.message import EmailMessage
-
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
 
-# Gmail SMTP（GitHub Secrets: SMTP_HOST/PORT/USER/PASS）
-SMTP_HOST = os.environ.get("SMTP_HOST", "")
-SMTP_PORT = int(os.environ.get("SMTP_PORT", "587") or "587")  # ✅ default 587
-SMTP_USER = os.environ.get("SMTP_USER", "")
-SMTP_PASS = os.environ.get("SMTP_PASS", "")
+# ✅ Secrets名に合わせる（互換: ALERT_* も許容）
+REPORT_TO = os.environ.get("REPORT_TO", "") or os.environ.get("ALERT_TO", "")
+REPORT_FROM = os.environ.get("REPORT_FROM", "") or os.environ.get("ALERT_FROM", "")
 
-# GitHub Secrets（添付の名前に合わせる）
-REPORT_TO = os.environ.get("REPORT_TO", "")     # 例: a@x.com,b@y.com
-REPORT_FROM = os.environ.get("REPORT_FROM", "") # 例: you@gmail.com
+# ✅ テスト用：OKでも送る
+FORCE_SEND_OK = os.environ.get("FORCE_SEND_OK", "").lower() == "true"
 
 
 def die(msg: str, code: int = 1):
@@ -30,6 +24,9 @@ def die(msg: str, code: int = 1):
 def supabase_get(path: str):
     if not SUPABASE_URL:
         raise RuntimeError("SUPABASE_URL is empty")
+    if not SUPABASE_SERVICE_ROLE_KEY:
+        raise RuntimeError("SUPABASE_SERVICE_ROLE_KEY is empty")
+
     url = f"{SUPABASE_URL}/rest/v1/{path}"
     headers = {
         "apikey": SUPABASE_SERVICE_ROLE_KEY,
@@ -73,10 +70,17 @@ def fetch_error_stage_rank(limit: int = 8) -> list[dict[str, Any]]:
 
 def build_subject(is_alert: bool) -> str:
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    return ("[ALERT] OCR監視 異常検知" if is_alert else "[OK] OCR監視 正常") + f" - {ts}"
+    prefix = "[ALERT] OCR監視 異常検知" if is_alert else "[OK] OCR監視 正常"
+    return f"{prefix} - {ts}"
 
 
-def build_body(th: dict[str, Any], w: dict[str, Any], rank: list[dict[str, Any]], is_alert: bool, reasons: list[str]) -> str:
+def build_body(
+    th: dict[str, Any],
+    w: dict[str, Any],
+    rank: list[dict[str, Any]],
+    is_alert: bool,
+    reasons: list[str],
+) -> str:
     lines: list[str] = []
     lines.append(f"判定: {'ALERT' if is_alert else 'OK'}")
     lines.append(f"集計ウィンドウ: {w.get('window_minutes')} 分")
@@ -112,39 +116,42 @@ def build_body(th: dict[str, Any], w: dict[str, Any], rank: list[dict[str, Any]]
     else:
         lines.append("- (なし)")
     lines.append("")
+
+    lines.append("■ 次のアクション（運用）")
+    lines.append("- fail が多い: error_stage 上位から原因追跡（signedUrl / fetch_image / ocr / ingredients / reply-line）")
+    lines.append("- low_quality が多い: quality_score と avg_confidence/raw_ocr_text_length を見る（撮影案内改善）")
+    lines.append("- high_unknown が多い: additive_unknown_labels の pending 上位を辞書追加")
+    lines.append("")
     return "\n".join(lines)
 
 
-def _parse_recipients(to_raw: str) -> list[str]:
+def _normalize_recipients(to_raw: str) -> str:
+    # msmtp は To: ヘッダ文字列をそのまま使うので、区切りを整えるだけ
     parts = [p.strip() for p in to_raw.replace(";", ",").split(",")]
-    return [p for p in parts if p]
+    parts = [p for p in parts if p]
+    return ", ".join(parts)
 
 
-def send_mail_smtp(subject: str, body: str):
+def send_mail_msmtp(subject: str, body: str):
     if not REPORT_TO or not REPORT_FROM:
-        die("REPORT_TO / REPORT_FROM が未設定です（GitHub Secrets を確認）")
+        die("REPORT_TO / REPORT_FROM（または ALERT_TO / ALERT_FROM）が未設定です")
 
-    if not (SMTP_HOST and SMTP_PORT and SMTP_USER and SMTP_PASS):
-        die("SMTP_HOST/SMTP_PORT/SMTP_USER/SMTP_PASS が未設定です（GitHub Secrets を確認）")
-
-    tos = _parse_recipients(REPORT_TO)
-    if not tos:
+    to_header = _normalize_recipients(REPORT_TO)
+    if not to_header:
         die("REPORT_TO の形式が不正です（宛先が空）")
 
-    msg = EmailMessage()
-    msg["From"] = REPORT_FROM
-    msg["To"] = ", ".join(tos)
-    msg["Subject"] = subject
-    msg.set_content(body)
+    msg = f"""From: {REPORT_FROM}
+To: {to_header}
+Subject: {subject}
+Content-Type: text/plain; charset=UTF-8
 
-    # Gmail: STARTTLS(587) 想定
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as s:
-        s.set_debuglevel(1)  # ✅ ActionsログにSMTPの会話が出る（原因特定しやすい）
-        s.ehlo()
-        s.starttls()
-        s.ehlo()
-        s.login(SMTP_USER, SMTP_PASS)
-        s.send_message(msg)
+{body}
+"""
+
+    # msmtp は stdin をそのまま送れる
+    p = subprocess.run(["msmtp", "-t"], input=msg.encode("utf-8"), check=False)
+    if p.returncode != 0:
+        raise RuntimeError(f"msmtp failed with code={p.returncode}")
 
 
 def main():
@@ -155,31 +162,28 @@ def main():
     w = fetch_window_summary()
     rank = fetch_error_stage_rank()
 
-    reasons = []
+    reasons: list[str] = []
     fail_count = int(w.get("fail_count") or 0)
     total_count = int(w.get("total_count") or 0)
     fail_rate = float(w.get("fail_rate") or 0)
     low_quality_rate = float(w.get("low_quality_rate") or 0)
     high_unknown_rate = float(w.get("high_unknown_rate") or 0)
 
+    # total_count が小さい時はノイズが出るので >=10 は維持
     if fail_count >= int(th["max_fail_count"]):
         reasons.append(f"fail_count {fail_count} >= {th['max_fail_count']}")
     if total_count >= 10 and fail_rate >= float(th["max_fail_rate"]):
-        reasons.append(f"fail_rate {fail_rate} >= {th['max_fail_rate']}")
+        reasons.append(f"fail_rate {fail_rate} >= {th['max_fail_rate']} (total_count>=10)")
     if total_count >= 10 and low_quality_rate >= float(th["max_low_quality_rate"]):
-        reasons.append(f"low_quality_rate {low_quality_rate} >= {th['max_low_quality_rate']}")
+        reasons.append(f"low_quality_rate {low_quality_rate} >= {th['max_low_quality_rate']} (total_count>=10)")
     if total_count >= 10 and high_unknown_rate >= float(th["max_high_unknown_rate"]):
-        reasons.append(f"high_unknown_rate {high_unknown_rate} >= {th['max_high_unknown_rate']}")
+        reasons.append(f"high_unknown_rate {high_unknown_rate} >= {th['max_high_unknown_rate']} (total_count>=10)")
 
     is_alert = len(reasons) > 0
-
     subject = build_subject(is_alert)
     body = build_body(th, w, rank, is_alert, reasons)
 
-    # 🔽 ここが追加ポイント
-    force_send = os.environ.get("FORCE_SEND_OK", "").lower() == "true"
-
-    if is_alert or force_send:
+    if is_alert or FORCE_SEND_OK:
         send_mail_msmtp(subject, body)
         print("MAIL sent")
     else:
@@ -188,4 +192,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
