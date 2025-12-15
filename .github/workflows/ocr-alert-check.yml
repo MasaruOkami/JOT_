@@ -61,12 +61,20 @@ jobs:
           echo "msmtp version:"
           msmtp --version
 
-      - name: List files (debug)
+      - name: Locate script (debug)
         run: |
           set -euo pipefail
-          pwd
+          echo "pwd=$(pwd)"
           ls -la
-          find . -maxdepth 4 -type f -name "ocr_alert_check.py" -print
+          echo "--- find ocr_alert_check.py ---"
+          find . -maxdepth 6 -type f -name "ocr_alert_check.py" -print
+
+          SCRIPT_PATH="$(find . -maxdepth 6 -type f -name 'ocr_alert_check.py' | head -n 1)"
+          if [ -z "${SCRIPT_PATH}" ]; then
+            echo "ocr_alert_check.py not found"
+            exit 2
+          fi
+          echo "SCRIPT_PATH=${SCRIPT_PATH}" >> $GITHUB_ENV
 
       - name: Run alert check (ALERT only)
         env:
@@ -74,9 +82,17 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           REPORT_TO: ${{ secrets.REPORT_TO }}
           REPORT_FROM: ${{ secrets.REPORT_FROM }}
+
+          # テスト送信したい場合だけ true にする（普段は消す or false）
+          FORCE_SEND_OK: ${{ secrets.FORCE_SEND_OK }}
+
+          # ログ出したい時だけ true
+          DEBUG_MSMTP_LOG: ${{ secrets.DEBUG_MSMTP_LOG }}
         run: |
           set -euo pipefail
-          python ocr_alert_check.py
+
+          echo "Running: python ${SCRIPT_PATH}"
+          python "${SCRIPT_PATH}"
 
       - name: Dump msmtp log (debug)
         if: ${{ always() }}
