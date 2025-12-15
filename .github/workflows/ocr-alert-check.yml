@@ -2,7 +2,7 @@ name: OCR Health Check (Alert Mail)
 
 on:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "*/30 * * * *"  # 30分おき
   workflow_dispatch:
 
 jobs:
@@ -21,6 +21,7 @@ jobs:
 
       - name: Install deps
         run: |
+          set -euo pipefail
           python -m pip install --upgrade pip
           pip install requests
           sudo apt-get update
@@ -35,7 +36,6 @@ jobs:
           REPORT_FROM: ${{ secrets.REPORT_FROM }}
         run: |
           set -euo pipefail
-
           cat > ~/.msmtprc << 'EOF'
           defaults
           auth           on
@@ -60,11 +60,12 @@ jobs:
           echo "msmtp version:"
           msmtp --version
 
-     - name: List files (debug)
+      - name: List files (debug)
         run: |
+          set -euo pipefail
           pwd
           ls -la
-          find . -maxdepth 3 -type f -name "ocr_health_check.py" -print
+          find . -maxdepth 4 -type f -name "ocr_health_check.py" -print
 
       - name: Run health check (ALERT only)
         env:
@@ -77,9 +78,14 @@ jobs:
           python ocr_health_check.py
 
       - name: Dump msmtp log (debug)
+        if: ${{ always() }}
         env:
           DEBUG_MSMTP_LOG: ${{ secrets.DEBUG_MSMTP_LOG }}
-        if: ${{ always() && env.DEBUG_MSMTP_LOG == 'true' }}
         run: |
-          echo "----- ~/.msmtp.log -----"
-          cat ~/.msmtp.log || true
+          set -euo pipefail
+          if [ "${DEBUG_MSMTP_LOG:-}" = "true" ]; then
+            echo "----- ~/.msmtp.log -----"
+            cat ~/.msmtp.log || true
+          else
+            echo "DEBUG_MSMTP_LOG is not true -> skip dumping log"
+          fi
