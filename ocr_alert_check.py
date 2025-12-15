@@ -18,12 +18,13 @@ SMTP_PORT = int(os.environ.get("SMTP_PORT", "0") or 0)
 SMTP_USER = os.environ.get("SMTP_USER", "")
 SMTP_PASS = os.environ.get("SMTP_PASS", "")
 
-# 宛先
-REPORT_TO = os.environ.get("REPORT_TO", "")       # 例: a@x.com,b@y.com
-REPORT_FROM = os.environ.get("REPORT_FROM", "")   # 例: you@gmail.com
+REPORT_TO = os.environ.get("REPORT_TO", "")
+REPORT_FROM = os.environ.get("REPORT_FROM", "")
 
-# OKでも送る（デバッグ用）
-FORCE_SEND_OK = os.environ.get("FORCE_SEND_OK", "").lower() == "true"
+# MODE:
+# - "alert": 異常時のみ送信
+# - "daily": 毎日1回は必ず送信（OKでも送る）
+MODE = (os.environ.get("MODE", "alert") or "alert").lower()
 
 
 def die(msg: str, code: int = 1):
@@ -34,7 +35,6 @@ def die(msg: str, code: int = 1):
 def supabase_get(path: str):
     if not SUPABASE_URL:
         raise RuntimeError("SUPABASE_URL is empty")
-
     url = f"{SUPABASE_URL}/rest/v1/{path}"
     headers = {
         "apikey": SUPABASE_SERVICE_ROLE_KEY,
@@ -84,7 +84,6 @@ def _parse_recipients(to_raw: str) -> list[str]:
 def send_mail_smtp(subject: str, body: str):
     if not REPORT_TO or not REPORT_FROM:
         die("REPORT_TO / REPORT_FROM が未設定です（GitHub Secrets を確認）")
-
     if not (SMTP_HOST and SMTP_PORT and SMTP_USER and SMTP_PASS):
         die("SMTP_HOST/SMTP_PORT/SMTP_USER/SMTP_PASS が未設定です（GitHub Secrets を確認）")
 
@@ -107,7 +106,6 @@ def send_mail_smtp(subject: str, body: str):
 
 
 def _pct(x: Any) -> str:
-    # 0.123 -> "12.3%"
     try:
         if x is None:
             return "未算出"
@@ -117,26 +115,21 @@ def _pct(x: Any) -> str:
         return "未算出"
 
 
-def _num(x: Any) -> str:
-    if x is None:
-        return "未算出"
-    return str(x)
-
-
 def build_subject(is_alert: bool, window_minutes: int) -> str:
-    # 件名はわかりやすく固定
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    prefix = "【重要】OCR監視で問題が検出されました" if is_alert else "OCR監視結果のお知らせ（正常）"
-    return f"{prefix} - 直近{window_minutes}分 - {ts}"
+    if is_alert:
+        head = "【重要】OCR監視で問題が検出されました"
+    else:
+        head = "OCR監視結果のお知らせ（正常）"
+    mode_tag = "（毎日レポート）" if MODE == "daily" else "（自動監視）"
+    return f"{head}{mode_tag} - 直近{window_minutes}分 - {ts}"
 
 
 def build_body_ok(th: dict[str, Any], w: dict[str, Any]) -> str:
     window_minutes = int(w.get("window_minutes") or th.get("window_minutes") or 60)
-
     total_count = int(w.get("total_count") or 0)
     fail_count = int(w.get("fail_count") or 0)
 
-    # 0件なら「未算出」を明示
     no_runs_note = ""
     if total_count == 0:
         no_runs_note = (
@@ -144,7 +137,7 @@ def build_body_ok(th: dict[str, Any], w: dict[str, Any]) -> str:
             "　すべての指標が「0件」または「未算出」になっています。\n"
         )
 
-    body = f"""OCR監視結果のお知らせ（正常）
+    return f"""OCR監視結果のお知らせ（正常）
 
 直近 {window_minutes} 分間の OCR 処理について確認しましたが、
 問題は検出されませんでした。
@@ -181,7 +174,6 @@ def build_body_ok(th: dict[str, Any], w: dict[str, Any]) -> str:
 
 ご確認ありがとうございました。
 """
-    return body
 
 
 def build_body_alert(th: dict[str, Any], w: dict[str, Any], rank: list[dict[str, Any]], reasons: list[str]) -> str:
@@ -189,11 +181,11 @@ def build_body_alert(th: dict[str, Any], w: dict[str, Any], rank: list[dict[str,
 
     total_count = int(w.get("total_count") or 0)
     fail_count = int(w.get("fail_count") or 0)
+
     fail_rate = w.get("fail_rate")
     low_quality_rate = w.get("low_quality_rate")
     high_unknown_rate = w.get("high_unknown_rate")
 
-    # エラーステージ一覧（上位）
     stage_lines = []
     for row in rank or []:
         stage = row.get("error_stage") or "(unknown)"
@@ -202,10 +194,9 @@ def build_body_alert(th: dict[str, Any], w: dict[str, Any], rank: list[dict[str,
     if not stage_lines:
         stage_lines = ["・（なし）"]
 
-    # 検出条件（わかる日本語）
     reason_lines = "\n".join([f"・{r}" for r in reasons]) if reasons else "・（詳細条件はログを参照）"
 
-    body = f"""【重要】OCR監視で問題が検出されました
+    return f"""【重要】OCR監視で問題が検出されました
 
 直近 {window_minutes} 分間の OCR 処理において、
 いくつか注意が必要な状態が確認されました。
@@ -246,7 +237,6 @@ def build_body_alert(th: dict[str, Any], w: dict[str, Any], rank: list[dict[str,
 
 早めの対応をおすすめします。
 """
-    return body
 
 
 def main():
@@ -263,16 +253,16 @@ def main():
     low_quality_rate = float(w.get("low_quality_rate") or 0)
     high_unknown_rate = float(w.get("high_unknown_rate") or 0)
 
-    reasons: list[str] = []
     max_fail_count = int(th.get("max_fail_count") or 5)
     max_fail_rate = float(th.get("max_fail_rate") or 0.20)
     max_low_quality_rate = float(th.get("max_low_quality_rate") or 0.30)
     max_high_unknown_rate = float(th.get("max_high_unknown_rate") or 0.30)
 
+    reasons: list[str] = []
     if fail_count >= max_fail_count:
         reasons.append(f"エラー件数が多い（{fail_count} 件 / 閾値 {max_fail_count} 件）")
 
-    # total_count が小さい時のノイズ対策（あなたの方針を維持）
+    # total_countが小さいときはノイズ抑制（>=10 で判定）
     if total_count >= 10 and fail_rate >= max_fail_rate:
         reasons.append(f"エラー率が高い（{fail_rate*100:.1f}% / 閾値 {max_fail_rate*100:.0f}%）")
     if total_count >= 10 and low_quality_rate >= max_low_quality_rate:
@@ -284,17 +274,20 @@ def main():
     window_minutes = int(w.get("window_minutes") or th.get("window_minutes") or 60)
 
     subject = build_subject(is_alert=is_alert, window_minutes=window_minutes)
-    if is_alert:
-        body = build_body_alert(th, w, rank, reasons)
-    else:
-        body = build_body_ok(th, w)
+    body = build_body_alert(th, w, rank, reasons) if is_alert else build_body_ok(th, w)
 
-    # 方針：ALERT時のみ送信。必要なら FORCE_SEND_OK=true で OK も送る
-    if is_alert or FORCE_SEND_OK:
+    # 送信ルール
+    if MODE == "daily":
+        # 毎日レポートは必ず送る（OKでも）
         send_mail_smtp(subject, body)
-        print("MAIL sent")
+        print("MAIL sent (daily)")
     else:
-        print("OK (no alert)")
+        # alert は異常時のみ送る
+        if is_alert:
+            send_mail_smtp(subject, body)
+            print("MAIL sent (alert)")
+        else:
+            print("OK (no alert)")
 
 
 if __name__ == "__main__":
