@@ -70,9 +70,10 @@ jobs:
           set -euo pipefail
           python ocr_health_check.py
 
-      # ★デバッグしたい時だけ true にする
       - name: Dump msmtp log (debug)
-        if: ${{ always() && secrets.DEBUG_MSMTP_LOG == 'true' }}
+        env:
+          DEBUG_MSMTP_LOG: ${{ secrets.DEBUG_MSMTP_LOG }}
+        if: ${{ always() && env.DEBUG_MSMTP_LOG == 'true' }}
         run: |
           echo "----- ~/.msmtp.log -----"
           cat ~/.msmtp.log || true
