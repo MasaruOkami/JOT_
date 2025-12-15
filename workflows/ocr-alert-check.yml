@@ -1,0 +1,60 @@
+name: OCR Alert Check
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"  # 10分ごと（UTC）
+  workflow_dispatch:
+
+jobs:
+  alert-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+          sudo apt-get update
+          sudo apt-get install -y msmtp
+
+      - name: Setup msmtp (Gmail)
+        run: |
+          cat > ~/.msmtprc << 'EOF'
+          defaults
+          auth           on
+          tls            on
+          tls_starttls   on
+          logfile        ~/.msmtp.log
+
+          account        gmail
+          host           smtp.gmail.com
+          port           587
+          from           ${ALERT_FROM}
+          user           ${GMAIL_USER}
+          password       ${GMAIL_APP_PASSWORD}
+
+          account default : gmail
+          EOF
+          chmod 600 ~/.msmtprc
+        env:
+          ALERT_FROM: ${{ secrets.ALERT_FROM }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+
+      - name: Run alert check
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          ALERT_TO: ${{ secrets.ALERT_TO }}
+          ALERT_FROM: ${{ secrets.ALERT_FROM }}
+        run: |
+          python ops/ocr_alert_check.py
