@@ -1,17 +1,33 @@
-name: OCR Alert Check
+name: OCR Health Check & Report
 
 on:
   schedule:
-    - cron: "*/10 * * * *"  # 10分ごと（UTC）
+    # 毎日 09:00 JST（UTC 00:00）
+    - cron: "0 0 * * *"
   workflow_dispatch:
 
 jobs:
-  alert-check:
+  ocr-health-check:
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
+    env:
+      # Supabase
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+      # Gmail SMTP
+      SMTP_HOST: ${{ secrets.SMTP_HOST }}
+      SMTP_PORT: ${{ secrets.SMTP_PORT }}
+      SMTP_USER: ${{ secrets.SMTP_USER }}
+      SMTP_PASS: ${{ secrets.SMTP_PASS }}
+
+      # Mail meta
+      REPORT_FROM: ${{ secrets.REPORT_FROM }}
+      REPORT_TO: ${{ secrets.REPORT_TO }}
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -19,42 +35,11 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install deps
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests
-          sudo apt-get update
-          sudo apt-get install -y msmtp
+          pip install supabase==2.* python-dotenv
 
-      - name: Setup msmtp (Gmail)
+      - name: Run OCR health check
         run: |
-          cat > ~/.msmtprc << 'EOF'
-          defaults
-          auth           on
-          tls            on
-          tls_starttls   on
-          logfile        ~/.msmtp.log
-
-          account        gmail
-          host           smtp.gmail.com
-          port           587
-          from           ${ALERT_FROM}
-          user           ${GMAIL_USER}
-          password       ${GMAIL_APP_PASSWORD}
-
-          account default : gmail
-          EOF
-          chmod 600 ~/.msmtprc
-        env:
-          ALERT_FROM: ${{ secrets.ALERT_FROM }}
-          GMAIL_USER: ${{ secrets.GMAIL_USER }}
-          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-
-      - name: Run alert check
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          ALERT_TO: ${{ secrets.ALERT_TO }}
-          ALERT_FROM: ${{ secrets.ALERT_FROM }}
-        run: |
-          python ops/ocr_alert_check.py
+          python scripts/ocr_health_check.py
