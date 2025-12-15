@@ -1,11 +1,11 @@
 import os
 import sys
-import subprocess
 from datetime import datetime, timezone
+from typing import Any
+
 import requests
 import smtplib
 from email.message import EmailMessage
-from typing import Any
 
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
@@ -13,7 +13,7 @@ SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
 
 # Gmail SMTP（GitHub Secrets: SMTP_HOST/PORT/USER/PASS）
 SMTP_HOST = os.environ.get("SMTP_HOST", "")
-SMTP_PORT = int(os.environ.get("SMTP_PORT", "0") or 0)
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "587") or "587")  # ✅ default 587
 SMTP_USER = os.environ.get("SMTP_USER", "")
 SMTP_PASS = os.environ.get("SMTP_PASS", "")
 
@@ -43,10 +43,8 @@ def supabase_get(path: str):
 
 
 def fetch_thresholds() -> dict[str, Any]:
-    # 既存の設計のままでOK（id=1 を読む）
     rows = supabase_get("ocr_alert_thresholds?select=*&id=eq.1")
     if not rows:
-        # デフォルト（DBに無い場合の保険）
         return {
             "window_minutes": 60,
             "max_fail_count": 5,
@@ -114,17 +112,10 @@ def build_body(th: dict[str, Any], w: dict[str, Any], rank: list[dict[str, Any]]
     else:
         lines.append("- (なし)")
     lines.append("")
-
-    lines.append("■ 次のアクション（運用）")
-    lines.append("- fail が多い: error_stage 上位から原因追跡（signedUrl / fetch_image / ocr / ingredients / reply-line）")
-    lines.append("- low_quality が多い: quality_score と avg_confidence/raw_ocr_text_length を見る（撮影案内改善）")
-    lines.append("- high_unknown が多い: additive_unknown_labels の pending 上位を辞書追加")
-    lines.append("")
     return "\n".join(lines)
 
 
 def _parse_recipients(to_raw: str) -> list[str]:
-    # "a@x.com,b@y.com" / "a@x.com; b@y.com" どちらもOK
     parts = [p.strip() for p in to_raw.replace(";", ",").split(",")]
     return [p for p in parts if p]
 
@@ -148,6 +139,7 @@ def send_mail_smtp(subject: str, body: str):
 
     # Gmail: STARTTLS(587) 想定
     with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as s:
+        s.set_debuglevel(1)  # ✅ ActionsログにSMTPの会話が出る（原因特定しやすい）
         s.ehlo()
         s.starttls()
         s.ehlo()
@@ -170,7 +162,6 @@ def main():
     low_quality_rate = float(w.get("low_quality_rate") or 0)
     high_unknown_rate = float(w.get("high_unknown_rate") or 0)
 
-    # ※ total_count が小さい時はノイズが出やすいので >=10 条件は維持
     if fail_count >= int(th["max_fail_count"]):
         reasons.append(f"fail_count {fail_count} >= {th['max_fail_count']}")
     if total_count >= 10 and fail_rate >= float(th["max_fail_rate"]):
@@ -184,10 +175,14 @@ def main():
     subject = build_subject(is_alert)
     body = build_body(th, w, rank, is_alert, reasons)
 
-    # 方針：ALERT時のみ送信
     if is_alert:
-        send_mail_smtp(subject, body)
-        print("ALERT sent")
+        try:
+            send_mail_smtp(subject, body)
+            print("ALERT sent")
+        except Exception as e:
+            # ✅ ここが出れば「届かない」の原因がログに出ます
+            print(f"[MAIL ERROR] {type(e).__name__}: {e}")
+            raise
     else:
         print("OK (no alert)")
 
