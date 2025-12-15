@@ -36,6 +36,7 @@ jobs:
           REPORT_FROM: ${{ secrets.REPORT_FROM }}
         run: |
           set -euo pipefail
+
           cat > ~/.msmtprc << 'EOF'
           defaults
           auth           on
@@ -65,9 +66,9 @@ jobs:
           set -euo pipefail
           pwd
           ls -la
-          find . -maxdepth 4 -type f -name "ocr_health_check.py" -print
+          find . -maxdepth 4 -type f -name "ocr_alert_check.py" -print
 
-      - name: Run health check (ALERT only)
+      - name: Run alert check (ALERT only)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -75,7 +76,7 @@ jobs:
           REPORT_FROM: ${{ secrets.REPORT_FROM }}
         run: |
           set -euo pipefail
-          python ocr_health_check.py
+          python ocr_alert_check.py
 
       - name: Dump msmtp log (debug)
         if: ${{ always() }}
